@@ -16,14 +16,14 @@ from PySpice.Unit import *
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-DEFAULT_KP = 0.08 # Изменено для теста
-DEFAULT_KI = 0.01  # Изменено для теста
+# РЕКОМЕНДУЕТСЯ НАЧАТЬ С МАЛЕНЬКИХ ЗНАЧЕНИЙ Kp, Ki ДЛЯ НОВОГО РЕЖИМА
+DEFAULT_KP = 0.01  # Уменьшено для начала
+DEFAULT_KI = 0.1   # Уменьшено для начала (ранее было 0.01, потом Ki рос до 15-25)
+                   # Ki=15 или 25 будет СЛИШКОМ большим для обновления каждый цикл ШИМ
 
 def run_boost_sim(Vin=5, L=100e-6, C=100e-6, Rload=10, freq=50e3, duty_cycle=0.6,
                   step_time=0.1e-6, t_start=0, t_end=2e-3, Il0=0, Vc0=0):
-    """
-    Симуляция повышающего преобразователя для заданного временного окна с начальными условиями.
-    """
+    # Эта функция остается без изменений
     circuit = Circuit('Boost Converter')
     circuit.V('input', 'vin', circuit.gnd, Vin@u_V)
     circuit.L('1', 'vin', 'n1', L@u_H, ic=Il0@u_A)
@@ -53,20 +53,20 @@ def run_boost_sim(Vin=5, L=100e-6, C=100e-6, Rload=10, freq=50e3, duty_cycle=0.6
 class BoostSimWidget(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Симулятор повышающего преобразователя с цифровым управлением")
+        self.setWindowTitle("Симулятор повышающего преобразователя (управление каждый цикл ШИМ)")
         layout = QVBoxLayout(self)
 
         controls_row1 = QHBoxLayout()
         self.vin_spin = self._add_param(controls_row1, "Vin", 5, 0.1, 20, "V")
-        self.l_spin = self._add_param(controls_row1, "L", 100, 1, 1000, "uH")
+        self.l_spin = self._add_param(controls_row1, "L", 100, 1, 1000, "uH") # Попробуйте L=100uH
         self.c_spin = self._add_param(controls_row1, "C", 100, 1, 1000, "uF")
-        self.r_spin = self._add_param(controls_row1, "R", 10, 1, 100, "Ω")
+        self.r_spin = self._add_param(controls_row1, "R", 80, 1, 200, "Ω") # Попробуйте Rload=80-100 Ом
 
         controls_row2 = QHBoxLayout()
         self.freq_spin = self._add_param(controls_row2, "F", 50, 1, 500, "kHz")
-        self.duty_spin = self._add_param(controls_row2, "D (начальный)", 60, 1, 99, "%")
+        self.duty_spin = self._add_param(controls_row2, "D (начальный)", 50, 1, 99, "%") # Начальный D около 50%
         self.vref_spin = self._add_param(controls_row2, "Vref", 10, 0.1, 30, "V")
-        self.cycles_spin = self._add_param(controls_row2, "Циклы (PI шаги)", 10, 1, 100, "") # Изменено название для ясности
+        self.cycles_spin = self._add_param(controls_row2, "Всего ШИМ циклов", 200, 10, 5000, "") # Теперь это общее число циклов ШИМ
 
         controls_row3 = QHBoxLayout()
         self.kp_spin = self._add_param(controls_row3, "Kp", DEFAULT_KP, 0.0001, 1.0, "")
@@ -83,8 +83,8 @@ class BoostSimWidget(QWidget):
         self.sim_btn = QPushButton("Симулировать (Сброс)")
         self.sim_btn.clicked.connect(self.simulate)
         btn_layout.addWidget(self.sim_btn)
-        self.next_btn = QPushButton("Далее (Повтор)") # Изменено для ясности
-        self.next_btn.clicked.connect(self.simulate_next)
+        self.next_btn = QPushButton("Далее (Повтор)") 
+        self.next_btn.clicked.connect(self.simulate_next) # simulate_next будет просто перезапускать
         btn_layout.addWidget(self.next_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
@@ -94,24 +94,25 @@ class BoostSimWidget(QWidget):
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout.addWidget(self.canvas)
 
-        self.Il = 0.0
-        self.Vc = self.vin_spin.value()
+        # Переменные состояния PI-регулятора (остаются)
         self.integral_e = 0.0
-        self.duty = self.duty_spin.value() / 100.0
+        # self.duty, self.Il, self.Vc будут локальными для цикла симуляции или передаваться как IC
+        # Глобальные массивы для накопления всех данных для графика
         self.t_all = np.array([])
         self.vout_all = np.array([])
         self.il_all = np.array([])
         self.gate_all = np.array([])
-        self.t_last = 0.0
+        self.t_last_plot = 0.0 # Время окончания последнего отображенного сегмента
 
     def _add_param(self, layout, label, value, minv, maxv, suffix):
+        # Эта функция остается без изменений
         lbl = QLabel(f"{label}:")
         box = QDoubleSpinBox()
         box.setRange(minv, maxv)
         box.setValue(value)
-        box.setMaximumWidth(90) # Немного увеличено для "Циклы (PI шаги)"
+        box.setMaximumWidth(110) # Немного увеличено для "Всего ШИМ циклов"
         box.setSuffix(f" {suffix}")
-        if suffix == "%" or "Циклы" in label : # изменено для нового имени
+        if suffix == "%" or "циклов" in label.lower() : 
              box.setDecimals(0)
         elif "V" in suffix or "A" in suffix or "Ω" in suffix:
              box.setDecimals(2)
@@ -129,126 +130,115 @@ class BoostSimWidget(QWidget):
         freq = self.freq_spin.value() * 1e3
         initial_duty_from_gui = self.duty_spin.value() / 100.0
         Vref = self.vref_spin.value()
-        N_pi_steps = int(self.cycles_spin.value()) # Теперь это N_pi_steps
+        Total_PWM_cycles = int(self.cycles_spin.value())
         
-        # step_time для SPICE симуляции
         T_switching_calc = 1 / freq
-        step_time_calc = T_switching_calc / 500 # Шаг внутри SPICE
+        step_time_calc = T_switching_calc / 500 
 
         Kp = self.kp_spin.value()
         Ki = self.ki_spin.value()
 
-        return Vin, L_val, C_val, Rload, freq, initial_duty_from_gui, step_time_calc, Vref, N_pi_steps, Kp, Ki
+        return Vin, L_val, C_val, Rload, freq, initial_duty_from_gui, \
+               step_time_calc, Vref, Total_PWM_cycles, Kp, Ki, T_switching_calc
 
     def simulate(self):
-        Vin, L_val, C_val, Rload, freq, initial_duty_gui, step_time_calc, Vref, N_pi_steps, Kp, Ki = self.get_params()
-
-        T_switching = 1 / freq
-        N_cycles_per_sim_step = 10 # <--- СКОЛЬКО КОММУТАЦИОННЫХ ЦИКЛОВ В КАЖДОЙ SPICE-СИМУЛЯЦИИ
+        Vin, L_val, C_val, Rload, freq, initial_duty_gui, step_time_calc, \
+        Vref, Total_PWM_cycles, Kp, Ki, T_switching = self.get_params()
 
         # Сброс состояния для новой серии симуляций
-        self.Il = 0.0
-        self.Vc = Vin 
-        self.integral_e = 0.0
-        self.duty = initial_duty_gui
+        current_Il0 = 0.0
+        current_Vc0 = Vin 
+        current_duty = initial_duty_gui
+        self.integral_e = 0.0 # Сбрасываем интегратор
+        
+        # Сброс массивов для графиков
         self.t_all = np.array([])
         self.vout_all = np.array([])
         self.il_all = np.array([])
         self.gate_all = np.array([])
-        self.t_last = 0.0
+        self.t_last_plot = 0.0
         
-        logging.info(f"Начало СЕРИИ симуляций: Vin={Vin}V, L={L_val*1e6:.1f}uH, C={C_val*1e6:.1f}uF, R={Rload}Ohm, Freq={freq/1e3:.1f}kHz, Vref={Vref}V")
-        logging.info(f"Всего PI шагов: {N_pi_steps}, циклов коммутации за PI шаг: {N_cycles_per_sim_step}")
-        logging.info(f"PI: Kp={Kp}, Ki={Ki}. Начальный Duty: {self.duty:.2%}")
+        logging.info(f"Начало симуляции: Vin={Vin}V, L={L_val*1e6:.1f}uH, C={C_val*1e6:.1f}uF, R={Rload}Ohm, Freq={freq/1e3:.1f}kHz, Vref={Vref}V")
+        logging.info(f"Всего ШИМ циклов для симуляции: {Total_PWM_cycles}")
+        logging.info(f"PI: Kp={Kp}, Ki={Ki}. Начальный Duty для 1-го цикла: {current_duty:.2%}")
 
-        for pi_step in range(N_pi_steps):
-            current_t_start_spice = 0 # Для SPICE симуляции время всегда начинается с 0
-            current_t_end_spice = N_cycles_per_sim_step * T_switching
+        for pwm_cycle_num in range(Total_PWM_cycles):
+            # Vc_feedback для текущего расчета Duty - это напряжение в начале текущего цикла ШИМ
+            Vc_feedback = current_Vc0 
 
-            logging.info(f"PI Шаг {pi_step+1}/{N_pi_steps}: Запуск SPICE ({N_cycles_per_sim_step} циклов коммутации) с Duty={self.duty:.2%}, Il0={self.Il:.2f}A, Vc0={self.Vc:.2f}V")
+            # Рассчитываем Duty для текущего цикла (кроме самого первого)
+            if pwm_cycle_num > 0: 
+                error = Vref - Vc_feedback
+                
+                # Anti-windup и накопление интеграла
+                # pi_step_duration для интеграла теперь T_switching
+                can_integrate = True
+                # Используем current_duty, который будет применен в этом цикле
+                if (current_duty >= 0.99 and error > 0) or \
+                   (current_duty <= 0.01 and error < 0):
+                    can_integrate = False
+                
+                if can_integrate:
+                    self.integral_e += error * T_switching # pi_step_duration is T_switching
+
+                # Расчет Feed-Forward Duty
+                duty_ff = 0.0
+                if Vref > Vin and Vref > 0:
+                    duty_ff = (Vref - Vin) / Vref
+                duty_ff = max(0.01, min(duty_ff, 0.90))
+
+                # PI корректирует значение Feed-Forward
+                pi_correction = Kp * error + Ki * self.integral_e
+                current_duty = duty_ff + pi_correction
+                current_duty = max(0.01, min(current_duty, 0.99))
             
-            analysis = run_boost_sim(Vin, L_val, C_val, Rload, freq, self.duty, 
-                                       step_time=step_time_calc,
-                                       t_start=current_t_start_spice, 
-                                       t_end=current_t_end_spice, 
-                                       Il0=self.Il, Vc0=self.Vc)
+            # Симуляция ОДНОГО цикла ШИМ
+            analysis = run_boost_sim(Vin, L_val, C_val, Rload, freq, current_duty, 
+                                       step_time_calc, 0, T_switching, 
+                                       current_Il0, current_Vc0)
 
+            # Обработка результатов
             time_segment_spice = np.array(analysis.time)
-            if len(time_segment_spice) == 0:
-                logging.error(f"PI Шаг {pi_step+1}: Симуляция не вернула временных точек.")
+            if len(time_segment_spice) < 2:
+                logging.error(f"ШИМ Цикл {pwm_cycle_num+1}: Симуляция не вернула достаточно точек.")
                 break
             
-            time_segment_global = time_segment_spice - time_segment_spice[0] + self.t_last 
+            time_segment_global = time_segment_spice - time_segment_spice[0] + self.t_last_plot 
 
             try:
                 vout_segment = np.array(analysis.nodes['n2'])
                 il_segment = np.array(analysis.branches['l1'])
                 gate_segment = np.array(analysis.nodes['gate'])
             except KeyError as e:
-                logging.error(f"PI Шаг {pi_step+1}: Ошибка доступа к данным анализа (KeyError): {e}.")
-                logging.info(f"  Доступные узлы: {list(analysis.nodes.keys())}")
-                logging.info(f"  Доступные ветви: {list(analysis.branches.keys())}")
+                logging.error(f"ШИМ Цикл {pwm_cycle_num+1}: Ошибка доступа к данным (KeyError): {e}.")
+                # (можно добавить логирование доступных узлов/ветвей)
                 break
             except Exception as e:
-                logging.error(f"PI Шаг {pi_step+1}: Общая ошибка доступа к данным анализа: {e}")
+                logging.error(f"ШИМ Цикл {pwm_cycle_num+1}: Общая ошибка доступа: {e}")
                 break
             
-            required_len = len(time_segment_global)
-            if not (len(vout_segment) == required_len and \
-                    len(il_segment) == required_len and \
-                    len(gate_segment) == required_len):
-                logging.warning(f"PI Шаг {pi_step+1}: Несовпадение длин массивов. "
-                                f"T:{len(time_segment_global)}, V:{len(vout_segment)}, I:{len(il_segment)}, G:{len(gate_segment)}. "
-                                f"Попытка усечения до минимальной длины.")
-                min_len = min(len(time_segment_global), len(vout_segment), len(il_segment), len(gate_segment))
-                if min_len == 0 :
-                    logging.error(f"PI Шаг {pi_step+1}: Один из массивов данных пуст после попытки усечения. Пропуск шага.")
-                    continue 
-                time_segment_global = time_segment_global[:min_len]
-                vout_segment = vout_segment[:min_len]
-                il_segment = il_segment[:min_len]
-                gate_segment = gate_segment[:min_len]
-
-
-            if len(vout_segment) > 0: # Дополнительная проверка после возможного усечения
-                self.Vc = float(vout_segment[-1])
-                self.Il = float(il_segment[-1])
-                self.t_last = time_segment_global[-1]
-
+            # Проверка длин и конкатенация (упрощенная, предполагаем, что длины совпадут)
+            if not (len(vout_segment) == len(time_segment_global) and \
+                    len(il_segment) == len(time_segment_global) and \
+                    len(gate_segment) == len(time_segment_global)):
+                logging.warning(f"ШИМ Цикл {pwm_cycle_num+1}: Несовпадение длин массивов. Пропуск цикла для графика.")
+            else:
                 self.t_all = np.concatenate((self.t_all, time_segment_global))
                 self.vout_all = np.concatenate((self.vout_all, vout_segment))
                 self.il_all = np.concatenate((self.il_all, il_segment))
                 self.gate_all = np.concatenate((self.gate_all, gate_segment))
-            else:
-                logging.warning(f"PI Шаг {pi_step+1}: Сегмент Vout пуст, состояние не обновлено.")
-                continue
 
-            error = Vref - self.Vc
-            pi_step_duration = N_cycles_per_sim_step * T_switching
-            
-            # Anti-windup для интегратора (простой вариант)
-            # Не накапливать интеграл, если duty уже на пределе и ошибка толкает его дальше
-            can_integrate = True
-            if (self.duty >= 0.99 and error > 0) or \
-               (self.duty <= 0.01 and error < 0): # Если ошибка толкает в сторону насыщения
-                can_integrate = False
-            
-            if can_integrate:
-                self.integral_e += error * pi_step_duration
+            # Обновление начальных условий для СЛЕДУЮЩЕГО цикла ШИМ
+            if len(vout_segment) > 0: # Убедимся, что есть данные
+                current_Vc0 = float(vout_segment[-1]) 
+                current_Il0 = float(il_segment[-1])
+                self.t_last_plot = time_segment_global[-1]
+            else: # Если данных нет, прерываем, чтобы избежать ошибок
+                logging.error(f"ШИМ Цикл {pwm_cycle_num+1}: Нет данных vout для обновления состояния.")
+                break
 
-            # Расчет Feed-Forward Duty
-            duty_ff = 0.0 # Базовое значение
-            if Vref > Vin and Vref > 0: # Добавим Vref > 0 для избежания деления на ноль
-                duty_ff = (Vref - Vin) / Vref
-            duty_ff = max(0.01, min(duty_ff, 0.90)) # Ограничение разумными пределами
-
-            # PI корректирует значение Feed-Forward
-            pi_correction = Kp * error + Ki * self.integral_e
-            self.duty = duty_ff + pi_correction
-            
-            self.duty = max(0.01, min(self.duty, 0.99)) # Конечное ограничение
-
-            logging.info(f"PI Шаг {pi_step+1} завершен: Vout_end = {self.Vc:.2f}В, Il_end = {self.Il:.2f}A. Новый Duty = {self.duty:.2%}. Err = {error:.2f}V, I_e = {self.integral_e:.4e}")
+            if (pwm_cycle_num + 1) % 10 == 0 or pwm_cycle_num == Total_PWM_cycles -1 : # Логирование каждые 10 циклов
+                 logging.info(f"ШИМ Цикл {pwm_cycle_num+1} завершен: Vc_end={current_Vc0:.2f}В, Il_end={current_Il0:.2f}A, Duty={current_duty:.2%}, Vc_fdbk={Vc_feedback:.2f}V, Err={Vref-Vc_feedback:.2f}V, I_e={self.integral_e:.4e}")
 
         if len(self.t_all) > 0:
             self.plot_results(self.t_all, self.vout_all, self.il_all, self.gate_all, Vref)
@@ -260,6 +250,7 @@ class BoostSimWidget(QWidget):
         self.simulate() 
 
     def plot_results(self, t, vout, il, gate, vref):
+        # Эта функция остается без изменений
         if len(t) == 0:
             logging.warning("Попытка построить пустые графики.")
             return
