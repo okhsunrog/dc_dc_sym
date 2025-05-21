@@ -224,11 +224,29 @@ class BoostSimWidget(QWidget):
                 continue
 
             error = Vref - self.Vc
-            pi_step_duration = N_cycles_per_sim_step * T_switching 
-            self.integral_e += error * pi_step_duration
+            pi_step_duration = N_cycles_per_sim_step * T_switching
+            
+            # Anti-windup для интегратора (простой вариант)
+            # Не накапливать интеграл, если duty уже на пределе и ошибка толкает его дальше
+            can_integrate = True
+            if (self.duty >= 0.99 and error > 0) or \
+               (self.duty <= 0.01 and error < 0): # Если ошибка толкает в сторону насыщения
+                can_integrate = False
+            
+            if can_integrate:
+                self.integral_e += error * pi_step_duration
 
-            self.duty = Kp * error + Ki * self.integral_e
-            self.duty = max(0.01, min(self.duty, 0.99))
+            # Расчет Feed-Forward Duty
+            duty_ff = 0.0 # Базовое значение
+            if Vref > Vin and Vref > 0: # Добавим Vref > 0 для избежания деления на ноль
+                duty_ff = (Vref - Vin) / Vref
+            duty_ff = max(0.01, min(duty_ff, 0.90)) # Ограничение разумными пределами
+
+            # PI корректирует значение Feed-Forward
+            pi_correction = Kp * error + Ki * self.integral_e
+            self.duty = duty_ff + pi_correction
+            
+            self.duty = max(0.01, min(self.duty, 0.99)) # Конечное ограничение
 
             logging.info(f"PI Шаг {pi_step+1} завершен: Vout_end = {self.Vc:.2f}В, Il_end = {self.Il:.2f}A. Новый Duty = {self.duty:.2%}. Err = {error:.2f}V, I_e = {self.integral_e:.4e}")
 
