@@ -11,11 +11,12 @@ from PySide6.QtCore import Qt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 
-from PySpice.Spice.Netlist import Circuit # Оставляем Circuit отсюда
+from PySpice.Spice.Netlist import Circuit 
 from PySpice.Unit import *
-from PySpice import Simulator # <--- ИМПОРТИРУЕМ Simulator ИЗ PySpice (как в примере capacitor-inductor.py)
+from PySpice import Simulator # Используем этот импорт
 
 # Настройка логирования
+# Чтобы видеть детальные логи Il0, раскомментируйте DEBUG
 # logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - [%(funcName)s] - %(message)s')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(funcName)s] - %(message)s')
 
@@ -74,34 +75,72 @@ DEFAULT_KP_CONTROLLER = 0.005
 DEFAULT_KI_CONTROLLER = 0.05  
 DEFAULT_MAX_DUTY_CONTROLLER = 0.90 
 
-def run_boost_sim(Vin=5, L=100e-6, C=100e-6, Rload=10, freq=50e3, duty_cycle=0.6,
-                  step_time=0.1e-6, t_start=0, t_end=2e-3, Il0=0, Vc0=0):
-    circuit = Circuit('Boost Converter') # Создаем Circuit локально в функции
-    # ... (определение схемы circuit как раньше) ...
-    circuit.V('input', 'vin', circuit.gnd, Vin@u_V)
-    circuit.L('1', 'vin', 'n1', L@u_H, ic=Il0@u_A)
-    circuit.S('1', 'n1', circuit.gnd, 'gate', circuit.gnd, model='SW')
-    circuit.model('SW', 'SW', Ron=1@u_mOhm, Roff=1@u_MOhm, Vt=2.5, Vh=0.1)
-    circuit.D('1', 'n1', 'n2', model='D')
-    circuit.model('D', 'D', IS=1e-15, N=1)
-    circuit.C('1', 'n2', circuit.gnd, C@u_F, ic=Vc0@u_V)
-    circuit.R('load', 'n2', circuit.gnd, Rload@u_Ohm)
+import logging
+from PySpice.Spice.Netlist import Circuit 
+from PySpice.Unit import *
+from PySpice import Simulator # Используем этот импорт
 
-    period = 1 / freq
-    safe_duty_cycle = max(0.001, min(float(duty_cycle), 0.999))
+# Настройка логирования (если еще не настроено глобально)
+# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(funcName)s] - %(message)s')
+
+def run_boost_sim(Vin_val=5, L_val=100e-6, C_val=100e-6, Rload_val=10, freq_val=50e3, duty_cycle_val=0.6,
+                  step_time_val=0.1e-6, t_start_val=0, t_end_val=2e-3, Il0_val=0, Vc0_val=0):
+    """
+    Симуляция повышающего преобразователя с использованием XSPICE индуктора,
+    фиктивного источника для измерения тока и нового API Simulator.
+    """
+    # Создаем новый объект Circuit для каждого вызова, чтобы избежать конфликтов состояний
+    # и корректно применять raw_spice с динамическими IC.
+    circuit = Circuit(f'Boost Converter XSPICE (Duty={duty_cycle_val:.2f} Il0={Il0_val:.2e})') 
+    
+    # Входное напряжение
+    circuit.V('input', 'vin', circuit.gnd, Vin_val@u_V)
+
+    # Уникальный узел между фиктивным источником и XSPICE индуктором
+    # Просто используем строковое имя, PySpice создаст узел при его первом использовании.
+    node_l_sense_out = 'n_for_l_sense' 
+
+    # Фиктивный источник напряжения (0В) для измерения тока индуктора
+    # Имя экземпляра 'VJl_sense'. Ток через него будет доступен как analysis.branches['vjl_sense']
+    circuit.VoltageSource('Jl_sense', 'vin', node_l_sense_out, 0@u_V) 
+
+    # Преобразуем значения L и Il0 в float для SPICE-строки
+    l_spice_float = float(L_val)
+    il0_spice_float = float(Il0_val) 
+
+    # XSPICE Индуктор A_L1 подключен между node_l_sense_out и 'n1'
+    # Используем f-string для вставки значений в raw_spice
+    # Имя модели 'inductor_ic_model' (может быть любым уникальным)
+    # Имя экземпляра A-устройства 'A_L1'
+    circuit.raw_spice = f""".model inductor_ic_model inductoric L={l_spice_float:.7e} IC={il0_spice_float:.7e}
+A_L1 {node_l_sense_out} n1 inductor_ic_model
+"""
+    # Остальная схема
+    circuit.S('1', 'n1', circuit.gnd, 'gate', circuit.gnd, model='SW') 
+    circuit.model('SW', 'SW', Ron=1@u_mOhm, Roff=1@u_MOhm, Vt=2.5, Vh=0.1)
+    circuit.D('1', 'n1', 'n2', model='D') 
+    circuit.model('D', 'D', IS=1e-15, N=1)
+    circuit.C('1', 'n2', circuit.gnd, C_val@u_F, ic=Vc0_val@u_V) # Vc0 применяется к конденсатору
+    circuit.R('load', 'n2', circuit.gnd, Rload_val@u_Ohm)
+
+    # Источник ШИМ-сигнала
+    period = 1 / freq_val
+    # Ограничиваем duty_cycle, чтобы избежать проблем с pulse_width=0 или pulse_width=period
+    safe_duty_cycle = max(0.001, min(float(duty_cycle_val), 0.999)) 
     pulse_width = period * safe_duty_cycle
 
     circuit.PulseVoltageSource('gate_drive', 'gate', circuit.gnd,
                                initial_value=0@u_V, pulsed_value=5@u_V,
-                               pulse_width=pulse_width@u_s,
-                               period=period@u_s,
+                               pulse_width=pulse_width@u_s, # Используем единицы @u_s
+                               period=period@u_s,           # Используем единицы @u_s
                                delay_time=0@u_s,
                                rise_time=10@u_ns,
                                fall_time=10@u_ns)
-
-    # --- Использование нового API симулятора согласно примерам ---
+    
+    # --- Использование нового API симулятора ---
     try:
-        # Simulator здесь - это модуль/класс, у которого есть метод factory()
+        # Simulator - это класс, который мы импортировали. 
+        # Его метод factory() возвращает экземпляр конкретного бэкенда симулятора.
         actual_simulator_object = Simulator.factory(simulator='ngspice-shared')
     except Exception as e_shared:
         logging.warning(f"Не удалось создать 'ngspice-shared' симулятор через factory ({e_shared}), пробую 'ngspice-subprocess'.")
@@ -111,26 +150,23 @@ def run_boost_sim(Vin=5, L=100e-6, C=100e-6, Rload=10, freq=50e3, duty_cycle=0.6
             logging.error(f"Не удалось создать ни один из симуляторов ngspice через factory: {e_subprocess}")
             raise RuntimeError(f"Ошибка создания SPICE симулятора через factory: {e_subprocess}")
 
-    # Создаем экземпляр симуляции для конкретной схемы
+    # Создаем экземпляр симуляции для данной схемы и настроек температуры
     simulation_instance = actual_simulator_object.simulation(circuit, 
                                                              temperature=25, 
                                                              nominal_temperature=25)
     
-    # Запускаем анализ на этом экземпляре симуляции
-    analysis = simulation_instance.transient(step_time=step_time@u_s, 
-                                             end_time=t_end@u_s, 
-                                             start_time=t_start@u_s, 
+    # Запускаем анализ переходных процессов
+    analysis = simulation_instance.transient(step_time=step_time_val@u_s, 
+                                             end_time=t_end_val@u_s, 
+                                             start_time=t_start_val@u_s, 
                                              use_initial_condition=True)
     
     return analysis
 
-
 class BoostSimWidget(QWidget):
-    # ... (весь остальной код BoostSimWidget остается ТОЧНО ТАКИМ ЖЕ, как в вашем предыдущем рабочем варианте) ...
-    # ... (Включая __init__, _add_param, get_params, _run_simulation_segment, simulate_reset, simulate_next, plot_results) ...
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Симулятор Boost (devel PySpice, Новый API, цикл-за-циклом)") 
+        self.setWindowTitle("Симулятор Boost (XSPICE Sense, цикл-за-циклом)") 
         self.main_layout = QVBoxLayout(self) 
 
         controls_row1 = QHBoxLayout()
@@ -189,6 +225,7 @@ class BoostSimWidget(QWidget):
         self.t_last_plot_point = 0.0       
 
     def _add_param(self, layout, label, value, minv, maxv, suffix):
+        # ... (без изменений) ...
         lbl = QLabel(f"{label}:")
         box = QDoubleSpinBox()
         box.setRange(minv, maxv)
@@ -206,6 +243,7 @@ class BoostSimWidget(QWidget):
         return box
 
     def get_params(self):
+        # ... (без изменений) ...
         Vin = self.vin_spin.value()
         L_val = self.l_spin.value() * 1e-6
         C_val = self.c_spin.value() * 1e-6
@@ -240,7 +278,9 @@ class BoostSimWidget(QWidget):
         last_applied_duty = start_last_applied_duty 
 
         logging.info(f"Запуск сегмента: {Num_PWM_cycles_segment} ШИМ циклов.")
-        logging.info(f"  PI: Kp={self.controller.Kp}, Ki={self.controller.Ki}, Dmax={self.controller.duty_max_internal*100:.1f}%, Начальные IC: Vc0={current_Vc0:.2f}, Il0={current_Il0:.2f}")
+        logging.info(f"  PI: Kp={self.controller.Kp}, Ki={self.controller.Ki}, Dmax={self.controller.duty_max_internal*100:.1f}%, Начальные IC: Vc0={current_Vc0:.2f}, Il0={current_Il0:.2f}A (это Il0 для модели XSPICE)")
+
+        logged_analysis_structure = False
 
         for pwm_cycle_num in range(Num_PWM_cycles_segment):
             time_of_current_cycle_start = self.t_last_plot_point
@@ -258,11 +298,17 @@ class BoostSimWidget(QWidget):
             
             last_applied_duty = current_duty_to_apply 
             
-            logging.info(f"  Вызов run_boost_sim с: Duty={current_duty_to_apply:.4f}, Il0={current_Il0:.4f}, Vc0={current_Vc0:.4f}")
+            logging.debug(f"  Вызов run_boost_sim с: L={L_val}, Duty={current_duty_to_apply:.4f}, Il0={current_Il0:.4f} (XSPICE IC), Vc0={current_Vc0:.4f}")
             analysis = run_boost_sim(Vin, L_val, C_val, Rload, freq, current_duty_to_apply, 
                                        step_time_calc, 0, T_switching, 
-                                       current_Il0, current_Vc0)
+                                       current_Il0, current_Vc0) 
             
+            if not logged_analysis_structure: # Логируем структуру только один раз
+                logging.info(f"Структура Analysis (после первого вызова run_boost_sim):")
+                if hasattr(analysis, 'branches'): logging.info(f"  Доступные ветви: {list(analysis.branches.keys())}")
+                else: logging.info(f"  Анализ не содержит 'branches'.")
+                logged_analysis_structure = True
+
             time_segment_spice = np.array(analysis.time)
             if len(time_segment_spice) < 2:
                 logging.error(f"  ШИМ Цикл {pwm_cycle_num+1}: Симуляция не вернула достаточно точек.")
@@ -271,23 +317,42 @@ class BoostSimWidget(QWidget):
             time_segment_global = time_segment_spice - time_segment_spice[0] + self.t_last_plot_point 
             try:
                 vout_segment = np.array(analysis.nodes['n2'])
-                il_segment = np.array(analysis.branches['l1'])
-                if len(il_segment) > 0: logging.info(f"    SPICE il_segment[0]={il_segment[0]:.4f} (vs Il0_sent={current_Il0:.4f})")
+                
+                # Ток индуктора через фиктивный источник 'VJl_sense'
+                # PySpice обычно именует ветви источников напряжения как 'v' + имя_экземпляра_источника
+                inductor_current_branch_key = 'vjl_sense' # Имя экземпляра VoltageSource было 'Jl_sense'
+                
+                if inductor_current_branch_key in analysis.branches:
+                    # Ток через источник напряжения положителен, если течет от + к - вывода.
+                    # VJl_sense: 'vin' (+), node_l_sense_out (-)
+                    # Ток индуктора A_L1 течет от node_l_sense_out к 'n1'.
+                    # Значит, I(VJl_sense) должен быть равен току индуктора (с правильным знаком).
+                    # Если ток индуктора положителен от vin к n1, то I(VJl_sense) тоже.
+                    il_segment = np.array(analysis.branches[inductor_current_branch_key])
+                    logging.debug(f"    Ток индуктора извлечен по ключу: '{inductor_current_branch_key}'")
+                else:
+                    logging.error(f"  ШИМ Цикл {pwm_cycle_num+1}: Не найден ключ '{inductor_current_branch_key}' для тока индуктора. "
+                                  f"Проверьте 'Доступные ветви' в логе выше.")
+                    il_segment = np.zeros_like(vout_segment) 
+
+                if len(il_segment) > 0: logging.info(f"    SPICE il_segment[0]={il_segment[0]:.4f} (vs Il0_sent_to_XSPICE_model={current_Il0:.4f})")
                 if len(vout_segment)>0: logging.info(f"    SPICE vout_segment[0]={vout_segment[0]:.4f} (vs Vc0_sent={current_Vc0:.4f})")
 
             except KeyError as e:
-                logging.error(f"  ШИМ Цикл {pwm_cycle_num+1}: Ошибка доступа к данным (KeyError): {e}.")
+                logging.error(f"  ШИМ Цикл {pwm_cycle_num+1}: Ошибка доступа к данным (KeyError): {e}. ")
                 break
             except Exception as e:
-                logging.error(f"  ШИМ Цикл {pwm_cycle_num+1}: Общая ошибка доступа: {e}")
+                logging.error(f"  ШИМ Цикл {pwm_cycle_num+1}: Общая ошибка доступа к данным: {e}")
                 break
             
             min_len_spice = min(len(vout_segment), len(il_segment), len(time_segment_global))
+            # ... (усечение) ...
             if len(time_segment_global) != min_len_spice : 
-                 logging.warning(f"  ШИМ Цикл {pwm_cycle_num+1}: Несовпадение длин SPICE. Усечение.")
+                 logging.warning(f"  ШИМ Цикл {pwm_cycle_num+1}: Несовпадение длин SPICE. Усечение. T:{len(time_segment_global)},V:{len(vout_segment)},I:{len(il_segment)}")
                  time_segment_global = time_segment_global[:min_len_spice]
                  vout_segment = vout_segment[:min_len_spice]
                  il_segment = il_segment[:min_len_spice]
+
 
             self.t_all_spice = np.concatenate((self.t_all_spice, time_segment_global))
             self.vout_all = np.concatenate((self.vout_all, vout_segment))
@@ -295,7 +360,7 @@ class BoostSimWidget(QWidget):
 
             if len(vout_segment) > 0: 
                 current_Vc0 = float(vout_segment[-1]) 
-                current_Il0 = float(il_segment[-1])
+                current_Il0 = float(il_segment[-1]) 
                 self.t_last_plot_point = time_segment_global[-1]
             else: 
                 logging.error(f"  ШИМ Цикл {pwm_cycle_num+1}: Нет данных vout для обновления состояния.")
@@ -311,6 +376,7 @@ class BoostSimWidget(QWidget):
 
 
     def simulate_reset(self): 
+        # ... (без изменений) ...
         Vin, L_val, C_val, Rload, freq, initial_duty_gui, step_time_calc, \
         Vref, Num_PWM_cycles_to_run, Kp, Ki, T_switching, Max_duty_pi = self.get_params()
 
@@ -339,6 +405,7 @@ class BoostSimWidget(QWidget):
 
 
     def simulate_next(self):
+        # ... (без изменений) ...
         if self.t_last_plot_point == 0 and len(self.t_all_spice) == 0:
             logging.warning("Нет предыдущей симуляции для продолжения. Запустите 'Симулировать (Сброс)' сначала.")
             return
@@ -360,6 +427,7 @@ class BoostSimWidget(QWidget):
         else: logging.warning("Нет данных для отображения после продолжения симуляции.")
 
     def plot_results(self):
+        # ... (без изменений) ...
         if len(self.t_all_spice) == 0:
             logging.warning("Попытка построить пустые графики.")
             return
