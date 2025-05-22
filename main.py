@@ -44,6 +44,7 @@ class PIController:
 
         if can_integrate:
             self.integral_error += error * self.T_sample
+
         pi_correction = self.Kp * error + self.Ki * self.integral_error
 
         calculated_duty = 0.0
@@ -128,15 +129,15 @@ class BoostSimWidget(QWidget):
         self.main_layout = QVBoxLayout(self)
 
         controls_row1 = QHBoxLayout()
-        self.vin_spin = self._add_param(controls_row1, "Vin", 5, 0.1, 20, "V")
-        self.l_spin = self._add_param(controls_row1, "L", 100, 10, 1000, "uH")
+        self.vin_spin = self._add_param(controls_row1, "Vin", 5, 0.1, 50, "V")
+        self.l_spin = self._add_param(controls_row1, "L", 100, 1, 1000, "uH")
         self.c_spin = self._add_param(controls_row1, "C", 100, 1, 1000, "uF")
-        self.r_spin = self._add_param(controls_row1, "R", 20, 5, 200, "Ω")
+        self.r_spin = self._add_param(controls_row1, "R", 20, 1, 200, "Ω")
 
         controls_row2 = QHBoxLayout()
-        self.freq_spin = self._add_param(controls_row2, "F", 50, 1, 500, "kHz")
-        self.duty_spin = self._add_param(controls_row2, "Initial Duty", 50, 1, 90, "%")
-        self.vref_spin = self._add_param(controls_row2, "Vref", 10, 0.1, 30, "V")
+        self.freq_spin = self._add_param(controls_row2, "F", 50, 1, 1000, "kHz")
+        self.duty_spin = self._add_param(controls_row2, "Initial Duty", 5, 1, 90, "%")
+        self.vref_spin = self._add_param(controls_row2, "Vref", 10, 0.1, 100, "V")
         self.cycles_spin = self._add_param(controls_row2, "PWM Cycles", 500, 50, 5000, "")
 
         controls_row3 = QHBoxLayout()
@@ -148,8 +149,7 @@ class BoostSimWidget(QWidget):
         controls_row3.addStretch()
 
         controls_row4 = QHBoxLayout()
-        self.softstart_cycles_spin = self._add_param(controls_row4, "Soft-start cycles", 20, 0, 200, "")
-        self.softstart_duty_spin = self._add_param(controls_row4, "Soft-start initial D (%)", 1, 0, 20, "%")
+        self.softstart_cycles_spin = self._add_param(controls_row4, "Soft-start cycles", 50, 0, 20000, "")
         controls_row4.addStretch()
 
         self.main_layout.addLayout(controls_row1)
@@ -221,41 +221,55 @@ class BoostSimWidget(QWidget):
         Ki = self.ki_spin.value()
         Max_duty_pi = self.max_duty_spin.value() / 100.0
         softstart_cycles = int(self.softstart_cycles_spin.value())
-        softstart_duty = self.softstart_duty_spin.value() / 100.0
         return (
             Vin, L_val, C_val, Rload, freq, initial_duty_from_gui,
             step_time_calc, Vref, Num_PWM_cycles_to_run, Kp, Ki, T_switching_calc, Max_duty_pi,
-            softstart_cycles, softstart_duty
+            softstart_cycles
         )
 
     def _run_simulation_segment(
         self, Vin, L_val, C_val, Rload, freq,
         initial_duty_for_segment, step_time_calc, Vref,
         Num_PWM_cycles_segment, Kp, Ki, T_switching, Max_duty_pi,
-        softstart_cycles, softstart_duty,
+        softstart_cycles,
         start_Vc0, start_Il0, start_last_applied_duty,
         use_softstart
     ):
         self.controller.T_sample = T_switching
-        self.controller.update_coeffs(Kp, Ki)
-        self.controller.set_duty_limits(0.01, Max_duty_pi)
         current_Vc0 = start_Vc0
         current_Il0 = start_Il0
         last_applied_duty = start_last_applied_duty
+
+        # Define initial (low) gains for soft-start
+        Kp_init = 0.05 * Kp
+        Ki_init = 0.05 * Ki
+        Max_duty_init = 0.05 * Max_duty_pi + 0.01  # avoid zero
 
         for pwm_cycle_num in range(Num_PWM_cycles_segment):
             time_of_current_cycle_start = self.t_last_plot_point
             Vc_feedback = current_Vc0
 
-            # Only apply soft-start ramp on first segment
+            # Gain scheduling: ramp Kp/Ki and max duty from initial to nominal over softstart_cycles
             if use_softstart and pwm_cycle_num < softstart_cycles:
-                current_duty_to_apply = softstart_duty + (
-                    (initial_duty_for_segment - softstart_duty) * pwm_cycle_num / max(softstart_cycles, 1)
-                )
-            elif pwm_cycle_num == 0 and self.t_last_plot_point == 0:
+                ramp = pwm_cycle_num / max(softstart_cycles, 1)
+                Kp_current = Kp_init + (Kp - Kp_init) * ramp
+                Ki_current = Ki_init + (Ki - Ki_init) * ramp
+                Max_duty_current = Max_duty_init + (Max_duty_pi - Max_duty_init) * ramp
+            else:
+                Kp_current = Kp
+                Ki_current = Ki
+                Max_duty_current = Max_duty_pi
+
+            self.controller.update_coeffs(Kp_current, Ki_current)
+            self.controller.set_duty_limits(0.01, Max_duty_current)
+
+            # For the very first cycle, use initial duty
+            if pwm_cycle_num == 0 and self.t_last_plot_point == 0:
                 current_duty_to_apply = initial_duty_for_segment
             else:
-                current_duty_to_apply = self.controller.calculate_duty(Vref, Vc_feedback, Vin, last_applied_duty)
+                current_duty_to_apply = self.controller.calculate_duty(
+                    Vref, Vc_feedback, Vin, last_applied_duty
+                )
 
             self.duty_all = np.append(self.duty_all, current_duty_to_apply)
             self.t_duty_updates = np.append(self.t_duty_updates, time_of_current_cycle_start)
@@ -309,7 +323,7 @@ class BoostSimWidget(QWidget):
         (
             Vin, L_val, C_val, Rload, freq, initial_duty_gui, step_time_calc,
             Vref, Num_PWM_cycles_to_run, Kp, Ki, T_switching, Max_duty_pi,
-            softstart_cycles, softstart_duty
+            softstart_cycles
         ) = params
         self.controller.reset()
         self.controller.set_duty_limits(0.01, Max_duty_pi)
@@ -324,7 +338,7 @@ class BoostSimWidget(QWidget):
             Vin, L_val, C_val, Rload, freq,
             initial_duty_gui, step_time_calc, Vref,
             Num_PWM_cycles_to_run, Kp, Ki, T_switching, Max_duty_pi,
-            softstart_cycles, softstart_duty,
+            softstart_cycles,
             start_Vc0=Vin, start_Il0=0.0, start_last_applied_duty=initial_duty_gui,
             use_softstart=True
         )
@@ -339,14 +353,14 @@ class BoostSimWidget(QWidget):
         (
             Vin, L_val, C_val, Rload, freq, _, step_time_calc,
             Vref, Num_PWM_cycles_to_run, Kp, Ki, T_switching, Max_duty_pi,
-            softstart_cycles, softstart_duty
+            softstart_cycles
         ) = params
 
         self._run_simulation_segment(
             Vin, L_val, C_val, Rload, freq,
             self.last_applied_duty_for_next_sim, step_time_calc, Vref,
             Num_PWM_cycles_to_run, Kp, Ki, T_switching, Max_duty_pi,
-            softstart_cycles, softstart_duty,
+            softstart_cycles,
             start_Vc0=self.last_Vc0_for_next_sim,
             start_Il0=self.last_Il0_for_next_sim,
             start_last_applied_duty=self.last_applied_duty_for_next_sim,
