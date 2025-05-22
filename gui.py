@@ -5,27 +5,20 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
+from matplotlib.backends.backend_qtagg import \
+    NavigationToolbar2QT as NavigationToolbar
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QApplication,
-    QDoubleSpinBox,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QSizePolicy,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QHBoxLayout,
+                               QLabel, QPushButton, QSizePolicy, QVBoxLayout,
+                               QWidget)
 
 from controller import SlewRatePI  # Import from controller.py
 from spice_simulation import run_boost_sim  # Import from spice_simulation.py
 
 # Constants
-DEFAULT_KP_CONTROLLER = 0.005
-DEFAULT_KI_CONTROLLER = 0.05
+DEFAULT_KP_CONTROLLER = 0.02
+DEFAULT_KI_CONTROLLER = 20.0
 DEFAULT_MAX_DUTY_CONTROLLER = 0.90
-DEFAULT_ACCELERATION = 50000  # V/s^2 example value, tune as needed
 
 
 class BoostSimWidget(QWidget):
@@ -53,7 +46,7 @@ class BoostSimWidget(QWidget):
 
         controls_row3 = QHBoxLayout()
         self.kp_spin = self._add_param(
-            controls_row3, "Kp", DEFAULT_KP_CONTROLLER, 0.0000, 0.5, ""
+            controls_row3, "Kp", DEFAULT_KP_CONTROLLER, 0.000, 0.5, ""
         )
         self.kp_spin.setDecimals(4)
         self.ki_spin = self._add_param(
@@ -67,13 +60,13 @@ class BoostSimWidget(QWidget):
 
         controls_row4 = QHBoxLayout()
         self.softstart_cycles_spin = self._add_param(
-            controls_row4, "Gain Ramp Cycles", 50, 0, 20000, ""
+            controls_row4, "Gain Ramp Cycles", 0, 0, 20000, ""
         )
         self.slew_rate_spin = self._add_param(
-            controls_row4, "Vref Slew Rate", 10000, 10, 1000000, "V/s"
+            controls_row4, "Vref Slew Rate", 1000000, 10, 1000000, "V/s"
         )
         self.acceleration_spin = self._add_param(
-            controls_row4, "Acceleration", DEFAULT_ACCELERATION, 10, 50000000, "V/s²"
+            controls_row4, "Acceleration", 3000000, 10, 50000000, "V/s²"
         )
         self.acceleration_spin.setDecimals(0)
         controls_row4.addStretch()

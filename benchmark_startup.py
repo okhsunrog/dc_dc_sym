@@ -6,10 +6,12 @@ import time
 import numpy as np
 from alive_progress import alive_bar
 
-from controller import \
-    SlewRatePI  # Assuming controller.py is in the same directory or PYTHONPATH
-from spice_simulation import \
-    run_boost_sim  # Assuming spice_simulation.py is in the same directory
+from controller import (
+    SlewRatePI,
+)  # Assuming controller.py is in the same directory or PYTHONPATH
+from spice_simulation import (
+    run_boost_sim,
+)  # Assuming spice_simulation.py is in the same directory
 
 # --- Default Simulation Parameters ---
 DEFAULT_VIN = 5.0  # V
@@ -20,7 +22,7 @@ DEFAULT_R_LOAD = 20.0  # Ohms
 DEFAULT_FREQ = 200 * 1000  # Hz (Note: 500kHz will be much slower)
 
 # DEFAULT_KP = 0.005
-DEFAULT_KP = 0.0187
+DEFAULT_KP = 0.02
 # DEFAULT_KI = 0.05
 DEFAULT_KI = 20.0
 DEFAULT_MAX_DUTY_PI = (
