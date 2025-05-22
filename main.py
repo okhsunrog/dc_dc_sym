@@ -11,27 +11,30 @@ from PySide6.QtCore import Qt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 
-from PySpice.Spice.Netlist import Circuit
+from PySpice.Spice.Netlist import Circuit # Оставляем Circuit отсюда
 from PySpice.Unit import *
+from PySpice import Simulator # <--- ИМПОРТИРУЕМ Simulator ИЗ PySpice (как в примере capacitor-inductor.py)
 
 # Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - [%(funcName)s] - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(funcName)s] - %(message)s')
 
-# --- Класс PIController (с изменениями для duty_max) ---
+
+# --- Класс PIController (без изменений) ---
 class PIController:
-    def __init__(self, Kp, Ki, T_sample, duty_min=0.01, duty_max_limit=0.99, ff_enabled=True): # Используем duty_max_limit
+    def __init__(self, Kp, Ki, T_sample, duty_min=0.01, duty_max_limit=0.99, ff_enabled=True):
         self.Kp = Kp
         self.Ki = Ki
         self.T_sample = T_sample
-        self.duty_min_internal = duty_min       # Внутреннее хранение настроек
-        self.duty_max_internal = duty_max_limit # Внутреннее хранение настроек
+        self.duty_min_internal = duty_min
+        self.duty_max_internal = duty_max_limit
         self.ff_enabled = ff_enabled
         self.integral_error = 0.0
-        self.last_calculated_duty = 0.0
+        self.last_calculated_duty = 0.0 
 
     def reset(self):
         self.integral_error = 0.0
-        self.last_calculated_duty = 0.0 # Можно сбросить и его
+        self.last_calculated_duty = 0.0
 
     def update_coeffs(self, Kp, Ki):
         self.Kp = Kp
@@ -45,8 +48,6 @@ class PIController:
     def calculate_duty(self, Vref, Vc_feedback, Vin, duty_applied_in_prev_step):
         error = Vref - Vc_feedback
         can_integrate = True
-        
-        # Anti-windup использует актуальные пределы
         if (duty_applied_in_prev_step >= self.duty_max_internal and error > 0) or \
            (duty_applied_in_prev_step <= self.duty_min_internal and error < 0):
             can_integrate = False
@@ -59,9 +60,8 @@ class PIController:
         calculated_duty = 0.0
         if self.ff_enabled:
             duty_ff = 0.0
-            if Vref > Vin and Vref > 0:
+            if Vref > Vin and Vref > 0: 
                 duty_ff = (Vref - Vin) / Vref
-            # FF ограничен своим практическим пределом (0.9) и текущим максимальным лимитом контроллера
             duty_ff = max(self.duty_min_internal, min(duty_ff, min(0.90, self.duty_max_internal))) 
             calculated_duty = duty_ff + pi_correction
         else:
@@ -70,14 +70,14 @@ class PIController:
         self.last_calculated_duty = max(self.duty_min_internal, min(calculated_duty, self.duty_max_internal))
         return self.last_calculated_duty
 
-DEFAULT_KP_CONTROLLER = 0.01 
-DEFAULT_KI_CONTROLLER = 0.1   
-DEFAULT_MAX_DUTY_CONTROLLER = 0.90 # <--- НОВЫЙ ГЛОБАЛЬНЫЙ ПРЕДЕЛ (90%)
+DEFAULT_KP_CONTROLLER = 0.005 
+DEFAULT_KI_CONTROLLER = 0.05  
+DEFAULT_MAX_DUTY_CONTROLLER = 0.90 
 
 def run_boost_sim(Vin=5, L=100e-6, C=100e-6, Rload=10, freq=50e3, duty_cycle=0.6,
                   step_time=0.1e-6, t_start=0, t_end=2e-3, Il0=0, Vc0=0):
-    # ... (без изменений) ...
-    circuit = Circuit('Boost Converter')
+    circuit = Circuit('Boost Converter') # Создаем Circuit локально в функции
+    # ... (определение схемы circuit как раньше) ...
     circuit.V('input', 'vin', circuit.gnd, Vin@u_V)
     circuit.L('1', 'vin', 'n1', L@u_H, ic=Il0@u_A)
     circuit.S('1', 'n1', circuit.gnd, 'gate', circuit.gnd, model='SW')
@@ -88,7 +88,7 @@ def run_boost_sim(Vin=5, L=100e-6, C=100e-6, Rload=10, freq=50e3, duty_cycle=0.6
     circuit.R('load', 'n2', circuit.gnd, Rload@u_Ohm)
 
     period = 1 / freq
-    safe_duty_cycle = max(0.001, min(float(duty_cycle), 0.999)) # Общий безопасный предел для SPICE
+    safe_duty_cycle = max(0.001, min(float(duty_cycle), 0.999))
     pulse_width = period * safe_duty_cycle
 
     circuit.PulseVoltageSource('gate_drive', 'gate', circuit.gnd,
@@ -99,38 +99,59 @@ def run_boost_sim(Vin=5, L=100e-6, C=100e-6, Rload=10, freq=50e3, duty_cycle=0.6
                                rise_time=10@u_ns,
                                fall_time=10@u_ns)
 
-    simulator = circuit.simulator(temperature=25, nominal_temperature=25)
-    analysis = simulator.transient(step_time=step_time@u_s, start_time=t_start@u_s, end_time=t_end@u_s, use_initial_condition=True)
+    # --- Использование нового API симулятора согласно примерам ---
+    try:
+        # Simulator здесь - это модуль/класс, у которого есть метод factory()
+        actual_simulator_object = Simulator.factory(simulator='ngspice-shared')
+    except Exception as e_shared:
+        logging.warning(f"Не удалось создать 'ngspice-shared' симулятор через factory ({e_shared}), пробую 'ngspice-subprocess'.")
+        try:
+            actual_simulator_object = Simulator.factory(simulator='ngspice-subprocess')
+        except Exception as e_subprocess:
+            logging.error(f"Не удалось создать ни один из симуляторов ngspice через factory: {e_subprocess}")
+            raise RuntimeError(f"Ошибка создания SPICE симулятора через factory: {e_subprocess}")
+
+    # Создаем экземпляр симуляции для конкретной схемы
+    simulation_instance = actual_simulator_object.simulation(circuit, 
+                                                             temperature=25, 
+                                                             nominal_temperature=25)
+    
+    # Запускаем анализ на этом экземпляре симуляции
+    analysis = simulation_instance.transient(step_time=step_time@u_s, 
+                                             end_time=t_end@u_s, 
+                                             start_time=t_start@u_s, 
+                                             use_initial_condition=True)
+    
     return analysis
 
 
 class BoostSimWidget(QWidget):
+    # ... (весь остальной код BoostSimWidget остается ТОЧНО ТАКИМ ЖЕ, как в вашем предыдущем рабочем варианте) ...
+    # ... (Включая __init__, _add_param, get_params, _run_simulation_segment, simulate_reset, simulate_next, plot_results) ...
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Симулятор повышающего преобразователя (Dmax ограничен)")
+        self.setWindowTitle("Симулятор Boost (devel PySpice, Новый API, цикл-за-циклом)") 
         self.main_layout = QVBoxLayout(self) 
 
         controls_row1 = QHBoxLayout()
         self.vin_spin = self._add_param(controls_row1, "Vin", 5, 0.1, 20, "V")
-        self.l_spin = self._add_param(controls_row1, "L", 100, 1, 1000, "uH") 
+        self.l_spin = self._add_param(controls_row1, "L", 100, 10, 1000, "uH") 
         self.c_spin = self._add_param(controls_row1, "C", 100, 1, 1000, "uF")
-        self.r_spin = self._add_param(controls_row1, "R", 80, 1, 200, "Ω") 
+        self.r_spin = self._add_param(controls_row1, "R", 20, 5, 200, "Ω") 
 
         controls_row2 = QHBoxLayout()
         self.freq_spin = self._add_param(controls_row2, "F", 50, 1, 500, "kHz")
-        self.duty_spin = self._add_param(controls_row2, "D (начальный)", 10, 1, 90, "%") # Макс начальный D ограничен 90%
+        self.duty_spin = self._add_param(controls_row2, "D (начальный)", 50, 1, 90, "%") 
         self.vref_spin = self._add_param(controls_row2, "Vref", 10, 0.1, 30, "V")
-        self.cycles_spin = self._add_param(controls_row2, "ШИМ циклов", 200, 10, 5000, "")
+        self.cycles_spin = self._add_param(controls_row2, "ШИМ циклов", 500, 50, 5000, "")
 
         controls_row3 = QHBoxLayout()
-        self.kp_spin = self._add_param(controls_row3, "Kp", DEFAULT_KP_CONTROLLER, 0.0000, 1.0, "") 
+        self.kp_spin = self._add_param(controls_row3, "Kp", DEFAULT_KP_CONTROLLER, 0.0000, 0.5, "") 
         self.kp_spin.setDecimals(4)
-        self.ki_spin = self._add_param(controls_row3, "Ki", DEFAULT_KI_CONTROLLER, 0.0, 100.0, "")
+        self.ki_spin = self._add_param(controls_row3, "Ki", DEFAULT_KI_CONTROLLER, 0.0, 20.0, "") 
         self.ki_spin.setDecimals(3)
-        # Добавим поле для Dmax, если хотите гибкости, или используем DEFAULT_MAX_DUTY_CONTROLLER
         self.max_duty_spin = self._add_param(controls_row3, "Dmax PI (%)", DEFAULT_MAX_DUTY_CONTROLLER*100, 10, 99, "")
         controls_row3.addStretch()
-
 
         self.main_layout.addLayout(controls_row1)
         self.main_layout.addLayout(controls_row2)
@@ -153,9 +174,8 @@ class BoostSimWidget(QWidget):
         self.main_layout.addWidget(self.toolbar) 
         self.main_layout.addWidget(self.canvas)  
         
-        # T_sample будет установлен в simulate(), duty_max_limit из DEFAULT
         self.controller = PIController(DEFAULT_KP_CONTROLLER, DEFAULT_KI_CONTROLLER, T_sample=0, 
-                                       duty_max_limit=DEFAULT_MAX_DUTY_CONTROLLER) 
+                                       duty_max_limit=self.max_duty_spin.value()/100.0) 
         
         self.last_Vc0_for_next_sim = 0.0
         self.last_Il0_for_next_sim = 0.0
@@ -169,14 +189,13 @@ class BoostSimWidget(QWidget):
         self.t_last_plot_point = 0.0       
 
     def _add_param(self, layout, label, value, minv, maxv, suffix):
-        # ... (без изменений) ...
         lbl = QLabel(f"{label}:")
         box = QDoubleSpinBox()
         box.setRange(minv, maxv)
         box.setValue(value)
         box.setMaximumWidth(110) 
         box.setSuffix(f" {suffix}")
-        if suffix == "%" or "циклов" in label.lower() or "Dmax" in label: # Добавлено Dmax 
+        if suffix == "%" or "циклов" in label.lower() or "Dmax" in label: 
              box.setDecimals(0)
         elif "V" in suffix or "A" in suffix or "Ω" in suffix:
              box.setDecimals(2)
@@ -197,11 +216,11 @@ class BoostSimWidget(QWidget):
         Num_PWM_cycles_to_run = int(self.cycles_spin.value())
         
         T_switching_calc = 1 / freq
-        step_time_calc = T_switching_calc / 500 
+        step_time_calc = T_switching_calc / 200 
 
         Kp = self.kp_spin.value()
         Ki = self.ki_spin.value()
-        Max_duty_pi = self.max_duty_spin.value() / 100.0 # Считываем Dmax из GUI
+        Max_duty_pi = self.max_duty_spin.value() / 100.0
 
         return Vin, L_val, C_val, Rload, freq, initial_duty_from_gui, \
                step_time_calc, Vref, Num_PWM_cycles_to_run, Kp, Ki, T_switching_calc, Max_duty_pi
@@ -209,30 +228,28 @@ class BoostSimWidget(QWidget):
 
     def _run_simulation_segment(self, Vin, L_val, C_val, Rload, freq, 
                                 initial_duty_for_segment, step_time_calc, Vref, 
-                                Num_PWM_cycles_segment, Kp, Ki, T_switching, Max_duty_pi, # Добавлен Max_duty_pi
+                                Num_PWM_cycles_segment, Kp, Ki, T_switching, Max_duty_pi,
                                 start_Vc0, start_Il0, start_last_applied_duty):
         
-        self.controller.T_sample = T_switching
+        self.controller.T_sample = T_switching 
         self.controller.update_coeffs(Kp, Ki)
-        self.controller.set_duty_limits(0.01, Max_duty_pi) # Устанавливаем Dmax из GUI
+        self.controller.set_duty_limits(0.01, Max_duty_pi)
 
         current_Vc0 = start_Vc0
         current_Il0 = start_Il0
         last_applied_duty = start_last_applied_duty 
 
-        # logging.info(f"Запуск сегмента: {Num_PWM_cycles_segment} ШИМ циклов.") # Уже логируется выше
-        # logging.info(f"  PI: Kp={self.controller.Kp}, Ki={self.controller.Ki}, Dmax={self.controller.duty_max_internal*100:.1f}%, Начальные IC: Vc0={current_Vc0:.2f}, Il0={current_Il0:.2f}")
-        # logging.info(f"  Начальный Duty для 1-го цикла этого сегмента: {initial_duty_for_segment:.2%}")
+        logging.info(f"Запуск сегмента: {Num_PWM_cycles_segment} ШИМ циклов.")
+        logging.info(f"  PI: Kp={self.controller.Kp}, Ki={self.controller.Ki}, Dmax={self.controller.duty_max_internal*100:.1f}%, Начальные IC: Vc0={current_Vc0:.2f}, Il0={current_Il0:.2f}")
 
         for pwm_cycle_num in range(Num_PWM_cycles_segment):
-            # ... (логика расчета current_duty_to_apply как раньше) ...
             time_of_current_cycle_start = self.t_last_plot_point
             Vc_feedback = current_Vc0 
 
             current_duty_to_apply = 0.0
             if pwm_cycle_num == 0 and self.t_last_plot_point == 0: 
                 current_duty_to_apply = initial_duty_for_segment
-                # logging.info(f"  ШИМ Цикл {pwm_cycle_num+1} (общий {len(self.duty_all)+1}): Применение начального Duty = {current_duty_to_apply:.2%}")
+                logging.debug(f"  ШИМ Цикл {pwm_cycle_num+1} (общий {len(self.duty_all)+1}): Применение начального Duty = {current_duty_to_apply:.2%}")
             else: 
                 current_duty_to_apply = self.controller.calculate_duty(Vref, Vc_feedback, Vin, last_applied_duty)
             
@@ -240,19 +257,24 @@ class BoostSimWidget(QWidget):
             self.t_duty_updates = np.append(self.t_duty_updates, time_of_current_cycle_start)
             
             last_applied_duty = current_duty_to_apply 
-
+            
+            logging.info(f"  Вызов run_boost_sim с: Duty={current_duty_to_apply:.4f}, Il0={current_Il0:.4f}, Vc0={current_Vc0:.4f}")
             analysis = run_boost_sim(Vin, L_val, C_val, Rload, freq, current_duty_to_apply, 
                                        step_time_calc, 0, T_switching, 
                                        current_Il0, current_Vc0)
-            # ... (остальная часть обработки результатов и логирования как раньше) ...
+            
             time_segment_spice = np.array(analysis.time)
             if len(time_segment_spice) < 2:
                 logging.error(f"  ШИМ Цикл {pwm_cycle_num+1}: Симуляция не вернула достаточно точек.")
                 break
+            
             time_segment_global = time_segment_spice - time_segment_spice[0] + self.t_last_plot_point 
             try:
                 vout_segment = np.array(analysis.nodes['n2'])
                 il_segment = np.array(analysis.branches['l1'])
+                if len(il_segment) > 0: logging.info(f"    SPICE il_segment[0]={il_segment[0]:.4f} (vs Il0_sent={current_Il0:.4f})")
+                if len(vout_segment)>0: logging.info(f"    SPICE vout_segment[0]={vout_segment[0]:.4f} (vs Vc0_sent={current_Vc0:.4f})")
+
             except KeyError as e:
                 logging.error(f"  ШИМ Цикл {pwm_cycle_num+1}: Ошибка доступа к данным (KeyError): {e}.")
                 break
@@ -280,7 +302,7 @@ class BoostSimWidget(QWidget):
                 break
             
             total_simulated_cycles = len(self.duty_all)
-            if (pwm_cycle_num + 1) % 20 == 0 or pwm_cycle_num == Num_PWM_cycles_segment -1 : 
+            if (pwm_cycle_num + 1) % 50 == 0 or pwm_cycle_num == Num_PWM_cycles_segment -1 : 
                  logging.info(f"  ШИМ Цикл {pwm_cycle_num+1}/{Num_PWM_cycles_segment} (общий {total_simulated_cycles}) завершен: Vc_end={current_Vc0:.2f}В, Il_end={current_Il0:.2f}A, Duty_applied={current_duty_to_apply:.2%}, Vc_fdbk={Vc_feedback:.2f}V, Err_used={Vref-Vc_feedback:.2f}V, I_e={self.controller.integral_error:.4e}")
         
         self.last_Vc0_for_next_sim = current_Vc0
@@ -290,10 +312,9 @@ class BoostSimWidget(QWidget):
 
     def simulate_reset(self): 
         Vin, L_val, C_val, Rload, freq, initial_duty_gui, step_time_calc, \
-        Vref, Num_PWM_cycles_to_run, Kp, Ki, T_switching, Max_duty_pi = self.get_params() # Получаем Max_duty_pi
+        Vref, Num_PWM_cycles_to_run, Kp, Ki, T_switching, Max_duty_pi = self.get_params()
 
         self.controller.reset()
-        # Устанавливаем Dmax перед первым запуском
         self.controller.set_duty_limits(0.01, Max_duty_pi) 
 
         self.t_all_spice = np.array([])
@@ -306,16 +327,15 @@ class BoostSimWidget(QWidget):
         logging.info(f"СБРОС И НАЧАЛО НОВОЙ СИМУЛЯЦИИ: Vin={Vin}V, Vref={Vref}V, Dmax_PI={Max_duty_pi*100:.1f}%")
         
         self._run_simulation_segment(Vin, L_val, C_val, Rload, freq, 
-                                     initial_duty_gui, step_time_calc, Vref, 
+                                     initial_duty_gui, 
+                                     step_time_calc, Vref, 
                                      Num_PWM_cycles_to_run, Kp, Ki, T_switching, Max_duty_pi,
                                      start_Vc0=Vin, 
                                      start_Il0=0.0, 
                                      start_last_applied_duty=initial_duty_gui)
         
-        if len(self.t_all_spice) > 0:
-            self.plot_results()
-        else:
-            logging.warning("Нет данных для отображения после симуляции.")
+        if len(self.t_all_spice) > 0: self.plot_results()
+        else: logging.warning("Нет данных для отображения после симуляции.")
 
 
     def simulate_next(self):
@@ -324,9 +344,9 @@ class BoostSimWidget(QWidget):
             return
 
         Vin, L_val, C_val, Rload, freq, _, step_time_calc, \
-        Vref, Num_PWM_cycles_to_run, Kp, Ki, T_switching, Max_duty_pi = self.get_params() # Получаем Max_duty_pi
+        Vref, Num_PWM_cycles_to_run, Kp, Ki, T_switching, Max_duty_pi = self.get_params()
         
-        logging.info(f"ПРОДОЛЖЕНИЕ СИМУЛЯЦИИ: Vin={Vin}V (неизменно), Vref={Vref}V, Dmax_PI={Max_duty_pi*100:.1f}%")
+        logging.info(f"ПРОДОЛЖЕНИЕ СИМУЛЯЦИИ: Vref={Vref}V, Dmax_PI={Max_duty_pi*100:.1f}%")
         
         self._run_simulation_segment(Vin, L_val, C_val, Rload, freq, 
                                      self.last_applied_duty_for_next_sim, 
@@ -336,13 +356,10 @@ class BoostSimWidget(QWidget):
                                      start_Il0=self.last_Il0_for_next_sim,
                                      start_last_applied_duty=self.last_applied_duty_for_next_sim)
         
-        if len(self.t_all_spice) > 0:
-            self.plot_results()
-        else:
-            logging.warning("Нет данных для отображения после продолжения симуляции.")
+        if len(self.t_all_spice) > 0: self.plot_results()
+        else: logging.warning("Нет данных для отображения после продолжения симуляции.")
 
     def plot_results(self):
-        # ... (без изменений) ...
         if len(self.t_all_spice) == 0:
             logging.warning("Попытка построить пустые графики.")
             return
@@ -371,10 +388,8 @@ class BoostSimWidget(QWidget):
             self.axes[2].set_ylabel("Скважность Duty (%)")
             self.axes[2].set_xlabel("Время (мс)")
             self.axes[2].set_title("Скважность ШИМ")
-            # Устанавливаем пределы для оси Y графика Duty, чтобы он не масштабировался слишком сильно
-            # если duty всегда низкий, но также позволял видеть предел Dmax.
-            current_max_duty_from_gui = self.max_duty_spin.value() # Это в %
-            self.axes[2].set_ylim(-5, min(current_max_duty_from_gui + 10, 105) ) # Немного выше Dmax
+            current_max_duty_from_gui = self.max_duty_spin.value() 
+            self.axes[2].set_ylim(-5, min(current_max_duty_from_gui + 10, 105) ) 
         else:
             self.axes[2].text(0.5, 0.5, 'Нет данных для Duty', horizontalalignment='center', verticalalignment='center')
 
@@ -383,6 +398,10 @@ class BoostSimWidget(QWidget):
 
 
 if __name__ == "__main__":
+    # Для детальной отладки применения Il0, раскомментируйте:
+    # logging.getLogger().handlers.clear() 
+    # logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - [%(funcName)s] - %(message)s')
+    
     app = QApplication(sys.argv)
     w = BoostSimWidget()
     w.show()

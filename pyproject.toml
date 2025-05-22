@@ -8,6 +8,7 @@ dependencies = [
     "matplotlib>=3.10.3",
     "numpy>=2.2.6",
     "pyside6>=6.9.0",
-    "pyspice>=1.5",
+    # "pyspice>=1.5",
+    "PySpice @ git+https://github.com/PySpice-org/PySpice.git@devel",
     "scipy>=1.15.3",
 ]
