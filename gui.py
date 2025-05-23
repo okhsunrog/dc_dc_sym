@@ -5,12 +5,18 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qtagg import \
-    NavigationToolbar2QT as NavigationToolbar
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QApplication, QDoubleSpinBox, QHBoxLayout,
-                               QLabel, QPushButton, QSizePolicy, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (
+    QApplication,
+    QDoubleSpinBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 from controller import SlewRatePI  # Import from controller.py
 from spice_simulation import run_boost_sim  # Import from spice_simulation.py
@@ -30,9 +36,10 @@ class BoostSimWidget(QWidget):
         # --- Parameter Controls ---
         controls_row1 = QHBoxLayout()
         self.vin_spin = self._add_param(controls_row1, "Vin", 5, 0.1, 50, "V")
-        self.l_spin = self._add_param(controls_row1, "L", 10, 1, 1000, "uH")
+        self.l_spin = self._add_param(controls_row1, "L", 10, 0.01, 1000, "uH")
+        self.l_spin.setDecimals(3)
         self.c_spin = self._add_param(controls_row1, "C", 100, 1, 1000, "uF")
-        self.r_spin = self._add_param(controls_row1, "R", 20, 1, 200, "Ω")
+        self.r_spin = self._add_param(controls_row1, "R", 20, 1, 5000, "Ω")
 
         controls_row2 = QHBoxLayout()
         self.freq_spin = self._add_param(controls_row2, "F", 200, 1, 1000, "kHz")
